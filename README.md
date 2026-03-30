@@ -368,7 +368,7 @@ SOFTWARE.
 
 ## 👤 Author
 
-**Pratik Potadar**
+**Pratik**
 
 - Project: OWind Monitoring Platform
 - Purpose: Urban wind energy optimization
