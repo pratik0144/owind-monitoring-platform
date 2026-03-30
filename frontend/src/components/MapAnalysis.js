@@ -12,6 +12,41 @@ mapboxgl.accessToken = process.env.REACT_APP_MAPBOX_TOKEN;
 const BUILDINGS_SOURCE = 'buildings-source';
 const BUILDINGS_3D_LAYER = 'buildings-3d-layer';
 const TARGET_3D_LAYER = 'target-3d-layer';
+const TURBINE_STYLE_ID = 'turbine-marker-styles';
+
+// Inject turbine styles once globally
+const injectTurbineStyles = () => {
+  if (document.getElementById(TURBINE_STYLE_ID)) return;
+  
+  const style = document.createElement('style');
+  style.id = TURBINE_STYLE_ID;
+  style.textContent = `
+    .turbine-marker {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      cursor: pointer;
+    }
+    .turbine-blades {
+      animation: spin 3s linear infinite;
+    }
+    @keyframes spin {
+      from { transform: rotate(0deg); }
+      to { transform: rotate(360deg); }
+    }
+    .turbine-label {
+      background: #047857;
+      color: white;
+      padding: 4px 8px;
+      border-radius: 4px;
+      font-size: 11px;
+      font-weight: 600;
+      margin-top: 4px;
+      white-space: nowrap;
+    }
+  `;
+  document.head.appendChild(style);
+};
 
 const MapAnalysis = () => {
   const mapContainer = useRef(null);
@@ -19,6 +54,7 @@ const MapAnalysis = () => {
   const marker = useRef(null);
   const turbineMarker = useRef(null);
   const windStreamLayer = useRef(null);
+  const analysisIdRef = useRef(0); // For race condition prevention
   
   const [coordinates, setCoordinates] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -26,6 +62,12 @@ const MapAnalysis = () => {
   const [windData, setWindData] = useState(null);
   const [recommendation, setRecommendation] = useState(null);
   const [buildingsRef, setBuildingsRef] = useState(null);
+  const [error, setError] = useState(null);
+
+  // Inject styles on mount
+  useEffect(() => {
+    injectTurbineStyles();
+  }, []);
 
   // Calculate centroid of a polygon
   const getCentroid = (coords) => {
@@ -238,13 +280,6 @@ const MapAnalysis = () => {
         'fill-extrusion-base': 0
       }
     });
-
-    // Tilt map for 3D perspective
-    map.current.easeTo({
-      pitch: 60,
-      bearing: 20,
-      duration: 1000
-    });
   };
 
   // Add animated turbine marker
@@ -270,35 +305,6 @@ const MapAnalysis = () => {
       </div>
       <div class="turbine-label">Turbine Placement</div>
     `;
-    
-    // Add spinning animation style
-    const style = document.createElement('style');
-    style.textContent = `
-      .turbine-marker {
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        cursor: pointer;
-      }
-      .turbine-blades {
-        animation: spin 3s linear infinite;
-      }
-      @keyframes spin {
-        from { transform: rotate(0deg); }
-        to { transform: rotate(360deg); }
-      }
-      .turbine-label {
-        background: #047857;
-        color: white;
-        padding: 4px 8px;
-        border-radius: 4px;
-        font-size: 11px;
-        font-weight: 600;
-        margin-top: 4px;
-        white-space: nowrap;
-      }
-    `;
-    document.head.appendChild(style);
 
     turbineMarker.current = new mapboxgl.Marker({ element: el, anchor: 'center' })
       .setLngLat(position)
@@ -319,6 +325,7 @@ const MapAnalysis = () => {
     setWindData(null);
     setRecommendation(null);
     setBuildingsRef(null);
+    setError(null);
     
     if (marker.current) {
       marker.current.remove();
@@ -342,11 +349,13 @@ const MapAnalysis = () => {
   // Ref to hold the analysis function to avoid dependency issues
   const runAnalysisRef = useRef(null);
 
-  // Run the full analysis pipeline
+  // Run the full analysis pipeline with race condition prevention
   const runAnalysis = async (lat, lng) => {
-    console.log('Running analysis for:', lat, lng);
+    // Increment analysis ID to track this specific call
+    const currentAnalysisId = ++analysisIdRef.current;
     
     setLoading(true);
+    setError(null);
     setBuildingCount(null);
     setWindData(null);
     setRecommendation(null);
@@ -354,7 +363,10 @@ const MapAnalysis = () => {
     try {
       // Fetch wind data
       const wind = await fetchWindData(lat, lng);
-      console.log('Wind data received:', wind);
+      
+      // Check if this analysis was superseded
+      if (currentAnalysisId !== analysisIdRef.current) return;
+      
       setWindData(wind);
 
       // Start wind animation
@@ -363,10 +375,10 @@ const MapAnalysis = () => {
         windStreamLayer.current.start();
       }
 
-      // Fetch buildings
+      // Fetch buildings - race multiple servers for speed
       const radius = 200;
       const query = `
-        [out:json][timeout:25];
+        [out:json][timeout:15];
         (
           way["building"](around:${radius},${lat},${lng});
           relation["building"](around:${radius},${lat},${lng});
@@ -376,13 +388,47 @@ const MapAnalysis = () => {
         out skel qt;
       `;
 
-      const response = await fetch('https://overpass-api.de/api/interpreter', {
-        method: 'POST',
-        body: `data=${encodeURIComponent(query)}`,
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded'
+      // Race all servers in parallel - use fastest response
+      const overpassServers = [
+        'https://overpass-api.de/api/interpreter',
+        'https://overpass.kumi.systems/api/interpreter'
+      ];
+
+      const fetchWithTimeout = async (url, timeout = 8000) => {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), timeout);
+        
+        try {
+          const res = await fetch(url, {
+            method: 'POST',
+            body: `data=${encodeURIComponent(query)}`,
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            signal: controller.signal
+          });
+          clearTimeout(timeoutId);
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          return res;
+        } catch (err) {
+          clearTimeout(timeoutId);
+          throw err;
         }
-      });
+      };
+
+      // Check if analysis was superseded
+      if (currentAnalysisId !== analysisIdRef.current) return;
+
+      // Race all servers - first successful response wins
+      let response;
+      try {
+        response = await Promise.any(
+          overpassServers.map(server => fetchWithTimeout(server))
+        );
+      } catch (err) {
+        throw new Error('Building data unavailable. Please try again.');
+      }
+
+      // Check if this analysis was superseded
+      if (currentAnalysisId !== analysisIdRef.current) return;
 
       const data = await response.json();
       const geojson = convertToGeoJSON(data);
@@ -391,12 +437,14 @@ const MapAnalysis = () => {
       const { selected, buildingRefs } = selectWindBuildings(geojson.features, clickPoint);
       
       if (selected.length === 0) {
-        console.log('No buildings found');
+        setError('No buildings found at this location. Try a different area.');
         setLoading(false);
         return;
       }
 
-      console.log('Buildings found:', selected.length);
+      // Check if this analysis was superseded
+      if (currentAnalysisId !== analysisIdRef.current) return;
+
       setBuildingsRef(buildingRefs);
       setBuildingCount(selected.length);
 
@@ -423,7 +471,6 @@ const MapAnalysis = () => {
         buildingRefs
       );
 
-      console.log('Placement result:', placementResult);
       setRecommendation(placementResult);
 
       // Add turbine marker at recommended location using actual building polygon
@@ -444,10 +491,16 @@ const MapAnalysis = () => {
         addTurbineMarker(turbinePos, placementResult.power);
       }
 
-    } catch (error) {
-      console.error('Analysis pipeline failed:', error);
+    } catch (err) {
+      // Only show error if this is still the current analysis
+      if (currentAnalysisId === analysisIdRef.current) {
+        setError(err.message || 'Analysis failed. Please try again.');
+      }
     } finally {
-      setLoading(false);
+      // Only update loading if this is still the current analysis
+      if (currentAnalysisId === analysisIdRef.current) {
+        setLoading(false);
+      }
     }
   };
 
@@ -562,6 +615,19 @@ const MapAnalysis = () => {
         <h2 style={styles.title}>🌀 Wind Turbine Placement Analysis</h2>
         <p style={styles.subtitle}>Click on the map to analyze optimal turbine placement</p>
       </div>
+
+      {/* Error banner */}
+      {error && (
+        <div style={styles.errorBanner}>
+          <span>⚠️ {error}</span>
+          <button 
+            onClick={() => setError(null)} 
+            style={styles.errorClose}
+          >
+            ✕
+          </button>
+        </div>
+      )}
 
       <div style={styles.content}>
         <div style={styles.mapWrapper} id="map-container">
@@ -755,6 +821,25 @@ const styles = {
     fontSize: '14px',
     color: '#64748b',
     marginTop: '4px'
+  },
+  errorBanner: {
+    background: '#fef2f2',
+    border: '1px solid #fecaca',
+    borderRadius: '8px',
+    padding: '12px 16px',
+    marginBottom: '16px',
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    color: '#dc2626'
+  },
+  errorClose: {
+    background: 'none',
+    border: 'none',
+    color: '#dc2626',
+    cursor: 'pointer',
+    fontSize: '16px',
+    padding: '4px 8px'
   },
   content: {
     display: 'flex',

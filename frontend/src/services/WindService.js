@@ -28,8 +28,6 @@ export const fetchWindData = async (lat, lng) => {
   const formattedTime = formatTime(currentTime);
 
   // Convert wind direction to 2D vector
-  // Meteorological convention: direction wind is coming FROM
-  // Convert to radians and calculate vector (direction wind is going TO)
   const directionRad = ((windDirection + 180) % 360) * (Math.PI / 180);
   const windVector = {
     x: Math.cos(directionRad),
@@ -46,8 +44,6 @@ export const fetchWindData = async (lat, lng) => {
 
 /**
  * Format ISO timestamp to local HH:MM
- * @param {string} isoTime - ISO timestamp from API
- * @returns {string} Formatted time string
  */
 const formatTime = (isoTime) => {
   try {
@@ -60,8 +56,6 @@ const formatTime = (isoTime) => {
 
 /**
  * Get cardinal direction name from degrees
- * @param {number} degrees - Wind direction in degrees
- * @returns {string} Cardinal direction (N, NE, E, etc.)
  */
 export const getCardinalDirection = (degrees) => {
   const directions = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
@@ -69,88 +63,7 @@ export const getCardinalDirection = (degrees) => {
   return directions[index];
 };
 
-/**
- * Generate wind arrow GeoJSON for visualization
- * @param {number} lat - Center latitude
- * @param {number} lng - Center longitude
- * @param {number} windDirection - Wind direction in degrees
- * @param {number} windSpeed - Wind speed for scaling
- * @returns {Object} GeoJSON FeatureCollection with arrow lines
- */
-export const generateWindArrows = (lat, lng, windDirection, windSpeed) => {
-  const features = [];
-  const gridSize = 5; // 5x5 grid of arrows
-  const spacing = 0.001; // ~100m spacing
-  const arrowLength = 0.0003 * Math.min(windSpeed / 5, 2); // Scale with wind speed
-
-  // Direction wind is going TO (opposite of meteorological direction)
-  const directionRad = ((windDirection + 180) % 360) * (Math.PI / 180);
-  const dx = Math.sin(directionRad) * arrowLength;
-  const dy = Math.cos(directionRad) * arrowLength;
-
-  for (let i = -Math.floor(gridSize / 2); i <= Math.floor(gridSize / 2); i++) {
-    for (let j = -Math.floor(gridSize / 2); j <= Math.floor(gridSize / 2); j++) {
-      const centerLng = lng + i * spacing;
-      const centerLat = lat + j * spacing;
-
-      // Arrow line
-      features.push({
-        type: 'Feature',
-        properties: { type: 'arrow-line' },
-        geometry: {
-          type: 'LineString',
-          coordinates: [
-            [centerLng - dx / 2, centerLat - dy / 2],
-            [centerLng + dx / 2, centerLat + dy / 2]
-          ]
-        }
-      });
-
-      // Arrow head (two short lines)
-      const headLength = arrowLength * 0.3;
-      const headAngle = Math.PI / 6; // 30 degrees
-
-      const tipLng = centerLng + dx / 2;
-      const tipLat = centerLat + dy / 2;
-
-      // Left head line
-      const leftAngle = directionRad + Math.PI - headAngle;
-      features.push({
-        type: 'Feature',
-        properties: { type: 'arrow-head' },
-        geometry: {
-          type: 'LineString',
-          coordinates: [
-            [tipLng, tipLat],
-            [tipLng + Math.sin(leftAngle) * headLength, tipLat + Math.cos(leftAngle) * headLength]
-          ]
-        }
-      });
-
-      // Right head line
-      const rightAngle = directionRad + Math.PI + headAngle;
-      features.push({
-        type: 'Feature',
-        properties: { type: 'arrow-head' },
-        geometry: {
-          type: 'LineString',
-          coordinates: [
-            [tipLng, tipLat],
-            [tipLng + Math.sin(rightAngle) * headLength, tipLat + Math.cos(rightAngle) * headLength]
-          ]
-        }
-      });
-    }
-  }
-
-  return {
-    type: 'FeatureCollection',
-    features
-  };
-};
-
 export default {
   fetchWindData,
-  getCardinalDirection,
-  generateWindArrows
+  getCardinalDirection
 };

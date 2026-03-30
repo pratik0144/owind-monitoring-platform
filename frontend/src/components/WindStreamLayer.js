@@ -16,10 +16,14 @@ class WindStreamLayer {
     this.center = null;
     this.frame = 0;
     
-    // Grid of particles across viewport
-    this.gridRows = 25;
-    this.gridCols = 30;
-    this.particleTrailLength = 20;
+    // Optimized particle count (reduced from 750 to 400 for better performance)
+    this.gridRows = 20;
+    this.gridCols = 20;
+    this.particleTrailLength = 15;
+    
+    // Store event handlers for cleanup
+    this.resizeHandler = () => this.resize();
+    this.moveHandler = () => { if (this.isActive) this.resize(); };
     
     this.createCanvas();
   }
@@ -50,12 +54,8 @@ class WindStreamLayer {
     this.ctx = this.canvas.getContext('2d', { alpha: true });
     
     this.resize();
-    window.addEventListener('resize', () => this.resize());
-    
-    // Update on map move
-    this.map.on('move', () => {
-      if (this.isActive) this.resize();
-    });
+    window.addEventListener('resize', this.resizeHandler);
+    this.map.on('move', this.moveHandler);
   }
 
   resize() {
@@ -109,7 +109,7 @@ class WindStreamLayer {
           y,
           trail: [],
           speed: 0.7 + Math.random() * 0.6,
-          age: Math.random() * 100 // Stagger initial ages
+          age: Math.random() * 100
         });
       }
     }
@@ -200,14 +200,11 @@ class WindStreamLayer {
   // Get color based on wind speed
   getWindColor(alpha = 1) {
     if (this.windSpeed < 4) {
-      // Light blue for low wind
-      return `rgba(135, 206, 250, ${alpha})`; // Light sky blue
+      return `rgba(135, 206, 250, ${alpha})`;
     } else if (this.windSpeed <= 7) {
-      // Medium blue
-      return `rgba(59, 130, 246, ${alpha})`; // Blue-500
+      return `rgba(59, 130, 246, ${alpha})`;
     } else {
-      // Dark blue for strong wind
-      return `rgba(30, 64, 175, ${alpha})`; // Blue-800
+      return `rgba(30, 64, 175, ${alpha})`;
     }
   }
 
@@ -285,11 +282,19 @@ class WindStreamLayer {
 
   destroy() {
     this.stop();
+    
+    // Remove event listeners
+    window.removeEventListener('resize', this.resizeHandler);
+    if (this.map) {
+      this.map.off('move', this.moveHandler);
+    }
+    
     if (this.canvas && this.canvas.parentNode) {
       this.canvas.parentNode.removeChild(this.canvas);
     }
     this.canvas = null;
     this.ctx = null;
+    this.map = null;
   }
 }
 
