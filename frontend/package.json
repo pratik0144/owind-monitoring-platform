@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "private": true,
   "dependencies": {
+    "@mapbox/mapbox-gl-geocoder": "^5.1.2",
     "axios": "^1.6.0",
     "chart.js": "^4.4.1",
     "mapbox-gl": "^3.20.0",
